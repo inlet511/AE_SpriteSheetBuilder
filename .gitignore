@@ -1,0 +1,18 @@
+# Generated release packages and local AE projects/media
+/dist/
+/node_modules/
+*.aep
+*.aepx
+*.aep.bak
+*.mov
+*.mp4
+*.zip
+*.log
+/tests/output/
+
+# OS/editor files
+.DS_Store
+Thumbs.db
+Desktop.ini
+.vscode/
+.idea/

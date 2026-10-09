@@ -1,0 +1,106 @@
+/* Run: node Tools/AE-SpriteSheet/tests/core.test.cjs */
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const script = fs.readFileSync(path.join(__dirname, '../SpriteSheetBuilder.jsx'), 'utf8');
+new vm.Script(script);
+const coreText = script.split('// CORE_BEGIN:')[1].split('// CORE_END')[0];
+const body = coreText.slice(coreText.indexOf('var Core'));
+const context = vm.createContext({});
+vm.runInContext(body, context);
+const core = context.Core;
+const source = {frameDuration: 1 / 30, duration: 8, workAreaStart: 0, workAreaDuration: 8};
+const options = {cols: 8, rows: 8, count: 64, tile: 512, padding: 0, workArea: true};
+let p = core.plan(source, options);
+assert.equal(p.width, 4096);
+assert.equal(p.height, 4096);
+assert.equal(p.samples.length, 64);
+assert.equal(p.samples[0].sourceFrame, 0);
+assert.equal(p.samples[63].sourceFrame, 239);
+assert.equal(p.samples[8].x, 0);
+assert.equal(p.samples[8].y, 512);
+assert.equal(p.samples[63].x, 3584);
+assert.equal(p.samples[63].y, 3584);
+assert.equal(new Set(p.samples.map(s => s.sourceFrame)).size, 64);
+assert.ok(p.samples.every(s => s.time >= 0 && s.time < 8));
+for (let i = 1; i < 64; i++) { assert.ok([3, 4].includes(p.samples[i].sourceFrame - p.samples[i - 1].sourceFrame)); }
+p = core.plan({...source, workAreaStart: 2, workAreaDuration: 4}, options);
+assert.equal(p.samples[0].sourceFrame, 60);
+assert.ok(p.samples[63].time < 6);
+assert.equal(p.playbackDuration, 4);
+p = core.plan({...source, workAreaStart: 1 / 30, workAreaDuration: 2 / 30}, {...options, count: 2});
+assert.equal(p.samples[0].sourceFrame, 1);
+assert.equal(p.samples[1].sourceFrame, 2);
+assert.equal(p.endFrameExclusive, 3);
+p = core.plan({...source, frameDuration: 1001 / 30000}, options);
+assert.ok(p.samples.every(s => s.time < 8));
+p = core.plan(source, {...options, count: 1, padding: 4, tile: 256});
+assert.equal(p.width, 2112);
+assert.equal(p.samples[0].x, 4);
+assert.equal(p.samples[0].y, 4);
+assert.throws(() => core.plan(source, {...options, count: 65}));
+assert.throws(() => core.plan(source, {...options, tile: 2048}));
+assert.throws(() => core.plan(source, {...options, count: '64junk'}));
+assert.throws(() => core.plan(source, {...options, count: 1.5}));
+assert.throws(() => core.plan({...source, workAreaDuration: 1}, options));
+assert.throws(() => core.plan({...source, workAreaStart: 9}, options));
+assert.throws(() => core.plan({...source, frameDuration: 0}, options));
+const metadata = vm.runInContext('({name: "烟雾", samples: [{frame: 0}, {frame: 239}], ok: true})', context);
+const result = JSON.parse(core.json(metadata));
+assert.equal(result.samples.length, 2);
+assert.equal(result.samples[1].frame, 239);
+assert.equal(result.ok, true);
+assert.equal(JSON.parse(core.json('quote" slash\\ newline\n tab\t')), 'quote" slash\\ newline\n tab\t');
+console.log('PASS: syntax, precise sampling, end exclusion, grid placement, bounds, metadata.');
+// Uniform range sampling includes the first and last actual source frames.
+p = core.sampling(source, {count:64});
+assert.equal(p.samples[0].sourceFrame,0); assert.equal(p.samples[63].sourceFrame,239);
+p = core.sampling(source, {count:5, rangeMode:'custom', rangeStartFrame:30, rangeEndFrame:39});
+assert.deepEqual(Array.from(p.samples,s=>s.sourceFrame),[30,32,34,36,39]);
+assert.equal(p.playbackDuration,10/30);
+p = core.sampling(source, {count:1, rangeMode:'custom', rangeStartFrame:30, rangeEndFrame:30});
+assert.equal(p.samples[0].sourceFrame,30);
+for (const range of [[-1,3],[2.5,5],[10,9],[0,240]]) {
+  assert.throws(()=>core.sampling(source,{count:1,rangeMode:'custom',rangeStartFrame:range[0],rangeEndFrame:range[1]}));
+}
+const bounds = [
+  {width: 512, height: 512, left: 10, top: 20, right: 110, bottom: 220},
+  {width: 512, height: 512, left: 100, top: 200, right: 250, bottom: 450},
+  {width: 512, height: 512, left: -1, top: -1, right: -1, bottom: -1}
+];
+let summary = core.summarize(bounds, 512, 512, 4, 2, 0);
+assert.equal(summary.maxFrameWidth, 150);
+assert.equal(summary.maxFrameHeight, 250);
+assert.equal(summary.union.width, 240);
+assert.equal(summary.union.height, 430);
+assert.equal(summary.crop.left, 6);
+assert.equal(summary.crop.top, 16);
+assert.equal(summary.crop.width, 248);
+assert.equal(summary.crop.height, 438);
+assert.equal(summary.suggestedTileWidth, 256);
+assert.equal(summary.suggestedTileHeight, 512);
+assert.equal(summary.suggestedSheetWidth, 512);
+assert.equal(summary.suggestedSheetHeight, 1024);
+assert.equal(summary.emptyFrames, 1);
+assert.equal(summary.touchesSourceEdge, false);
+summary = core.summarize(bounds, 512, 512, 4, 2, 4);
+assert.equal(summary.suggestedTileWidth, 248);
+assert.equal(summary.suggestedSheetWidth, 512);
+summary = core.summarize([{width: 512, height: 512, left: 511, top: 511, right: 512, bottom: 512}], 512, 512, 0, 1, 7);
+assert.equal(summary.crop.width, 4);
+assert.equal(summary.crop.left, 508);
+assert.equal(summary.suggestedTileWidth, 18);
+assert.equal(summary.touchesSourceEdge, true);
+assert.throws(() => core.summarize([bounds[2]], 512, 512, 4, 2, 0));
+assert.throws(() => core.summarize([{...bounds[0], right: 600}], 512, 512, 4, 2, 0));
+summary = core.summarize(Array(80).fill(bounds[0]), 512, 512, 4, 8, 0);
+assert.equal(summary.tightRows, 10);
+assert.equal(summary.rows, 16);
+assert.equal(summary.columns, 8);
+assert.equal(Math.log2(summary.suggestedSheetWidth) % 1, 0);
+assert.equal(Math.log2(summary.suggestedSheetHeight) % 1, 0);
+summary = core.summarize(bounds, 512, 512, 4, 3, 0);
+assert.equal(summary.columns, 4);
+assert.equal(summary.rows, 1);
+console.log('PASS: Uniform range sampling, rectangular tiles, moving-content union, empty frames, margin, padded recommendations.');
